@@ -493,6 +493,91 @@
       color: var(--text);
     }
 
+    /* ─── mobile banner ──────────────────────────────────────────── */
+    .mobileBanner {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: hsla(216, 62%, 4%, 0.97);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 28px;
+      text-align: center;
+      gap: 0;
+    }
+
+    @media (max-width: 1080px) {
+      .mobileBanner { display: flex; }
+    }
+
+    .mobileBanner .mb-brand {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 32px;
+    }
+
+    .mobileBanner .mb-rule {
+      width: 32px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--stroke-accent), transparent);
+      margin: 0 auto 32px;
+    }
+
+    .mobileBanner .mb-head {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 2.4px;
+      text-transform: uppercase;
+      color: hsla(186, 100%, 86%, 0.72);
+      margin-bottom: 18px;
+      line-height: 1.6;
+    }
+
+    .mobileBanner .mb-body {
+      font-size: 12.5px;
+      line-height: 1.72;
+      letter-spacing: .12px;
+      color: var(--text-sub);
+      max-width: 34ch;
+      margin-bottom: 36px;
+    }
+
+    .mobileBanner .mb-body em {
+      font-style: normal;
+      color: var(--cyan);
+    }
+
+    .mobileBanner .mb-dismiss {
+      font-size: 10px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--dim);
+      background: transparent;
+      border: 1px solid hsla(197, 42%, 72%, 0.14);
+      padding: 10px 18px;
+      cursor: pointer;
+      font-family: var(--mono);
+      transition: color .14s, border-color .14s;
+    }
+
+    .mobileBanner .mb-dismiss:hover {
+      color: var(--text-sub);
+      border-color: hsla(197, 42%, 72%, 0.28);
+    }
+
+    .mobileBanner .mb-note {
+      font-size: 10px;
+      letter-spacing: .08px;
+      color: var(--dim);
+      margin-top: 16px;
+      line-height: 1.5;
+    }
+
     /* ─── responsive ─────────────────────────────────────────────── */
     @media (max-width: 1080px) {
       html, body { overflow: auto; }
@@ -518,6 +603,21 @@
 </head>
 
 <body>
+
+  <!-- mobile interstitial — only visible on narrow viewports -->
+  <div class="mobileBanner" id="mobileBanner" role="dialog" aria-modal="true" aria-label="Desktop recommended">
+    <div class="mb-brand">DISINTEGRATION</div>
+    <div class="mb-rule"></div>
+    <div class="mb-head">This work requires a desktop browser</div>
+    <p class="mb-body">
+      These are <em>interactive Gaussian splat objects</em> — 
+      live, volumetric, navigable in three dimensions. 
+      That experience does not exist on this screen.
+    </p>
+    <button class="mb-dismiss" id="mbDismiss">Continue to preview anyway</button>
+    <p class="mb-note">Preview stills and Acquire links are available on mobile.</p>
+  </div>
+
   <div class="app">
 
     <!-- left: statement -->
@@ -1119,6 +1219,15 @@
     }
 
     window.addEventListener("hashchange", handleRoute);
+
+    // ── mobile banner dismiss ─────────────────────────────────────────
+    const mobileBanner = document.getElementById("mobileBanner");
+    const mbDismiss    = document.getElementById("mbDismiss");
+    if (mbDismiss) {
+      mbDismiss.addEventListener("click", () => {
+        mobileBanner.style.display = "none";
+      });
+    }
 
     applyStillLayerState();
     renderList();
