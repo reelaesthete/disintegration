@@ -704,28 +704,62 @@
       location.hash = `#/work/${encodeURIComponent(id)}`;
     }
 
-    // ── three.js setup ───────────────────────────────────────────────
-    const scene    = new THREE.Scene();
-    const camera   = new THREE.PerspectiveCamera(60, 1, 0.05, 2000);
-    camera.position.set(0, 0, DEFAULT_VIEW_RADIUS);
+    // ── three.js setup (lazy — created on first work load) ───────────
+    const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 768;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setClearAlpha(0);
-    mount.appendChild(renderer.domElement);
+    let scene    = null;
+    let camera   = null;
+    let renderer = null;
+    let spark    = null;
+    let rafId    = null;
 
-    // SparkRenderer is required in Spark 2.x — it handles the splat draw calls.
-    const spark = new SparkRenderer({ renderer });
-    scene.add(spark);
+    function initWebGL() {
+      if (renderer) return; // already initialized
+
+      scene  = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(60, 1, 0.05, 2000);
+      camera.position.set(0, 0, DEFAULT_VIEW_RADIUS);
+
+      renderer = new THREE.WebGLRenderer({
+        antialias: !isMobile,
+        alpha: true,
+        powerPreference: "high-performance",
+      });
+      renderer.setPixelRatio(isMobile ? Math.min(window.devicePixelRatio || 1, 1) : Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setClearAlpha(0);
+      mount.appendChild(renderer.domElement);
+
+      // Handle WebGL context loss gracefully (common on mobile with large splats)
+      renderer.domElement.addEventListener("webglcontextlost", e => {
+        e.preventDefault();
+        statusEl.textContent = "GPU limit reached — try again";
+        mount.classList.remove("is-loading");
+      }, false);
+      renderer.domElement.addEventListener("webglcontextrestored", () => {
+        if (currentWork) loadWork(currentWork);
+      }, false);
+
+      spark = new SparkRenderer({ renderer });
+      scene.add(spark);
+
+      resize();
+
+      // Start render loop
+      rafId = renderer.setAnimationLoop(() => {
+        if (autoOrbit && !isDown) yaw += orbitSpeed;
+        updateCamera();
+        renderer.render(scene, camera);
+      });
+    }
 
     function resize() {
+      if (!renderer) return;
       const w = mount.clientWidth;
       const h = mount.clientHeight;
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     }
-    resize();
     new ResizeObserver(resize).observe(mount);
     window.addEventListener("resize", resize);
 
@@ -733,7 +767,7 @@
     let isDown = false, panDrag = false, userHasInteracted = false;
     let lastX = 0, lastY = 0;
     let yaw = 0, pitch = 0, radius = DEFAULT_VIEW_RADIUS;
-    const orbitTarget = new THREE.Vector3(0, 0, 0);
+    let orbitTarget = new THREE.Vector3(0, 0, 0);
     let autoOrbit = true;
     let stillLayerOn = true;
     const orbitSpeed = 0.0016;
@@ -747,6 +781,7 @@
     }
 
     function syncOrbitFromCamera() {
+      if (!camera) return;
       const p = camera.position.clone().sub(orbitTarget);
       radius = p.length();
       yaw    = Math.atan2(p.x, p.z);
@@ -754,6 +789,7 @@
     }
 
     function updateCamera() {
+      if (!camera) return;
       const x = radius * Math.cos(pitch) * Math.sin(yaw);
       const y = radius * Math.sin(pitch);
       const z = radius * Math.cos(pitch) * Math.cos(yaw);
@@ -870,6 +906,24 @@
 
     async function loadWork(work) {
       if (!work) return;
+
+      if (isMobile) {
+        currentWork = work;
+        setSelectedUI(work);
+        previewImage.src = work.image;
+        previewImage.alt = `${work.title} preview`;
+        titleEl.textContent = work.title;
+        statusEl.textContent = "Preview";
+        mount.classList.remove("is-loading");
+        mount.classList.add("is-loaded", "show-still");
+        mintNote.textContent = "Mobile preview available. Full interactive viewer is best experienced on desktop.";
+        toggleOrbitBtn.disabled = true;
+        resetViewBtn.disabled = true;
+        toggleStillBtn.disabled = false;
+        return;
+      }
+
+      initWebGL(); // ensure renderer exists before loading
       if (currentSplat) {
         scene.remove(currentSplat);
         currentSplat.dispose?.();
@@ -981,7 +1035,9 @@
         });
 
         // Prefetch on hover — starts the fetch before the user clicks.
-        item.addEventListener("pointerenter", () => prefetchSplat(w), { once: true });
+        if (!isMobile) {
+          item.addEventListener("pointerenter", () => prefetchSplat(w), { once: true });
+        }
 
         worksListEl.appendChild(item);
       });
@@ -1069,13 +1125,9 @@
     handleRoute();
 
     // Begin fetching the first work's splat immediately so it's warm when clicked.
-    prefetchSplat(WORKS[0]);
-
-    renderer.setAnimationLoop(() => {
-      if (autoOrbit && !isDown) yaw += orbitSpeed;
-      updateCamera();
-      renderer.render(scene, camera);
-    });
+    if (!isMobile) {
+      prefetchSplat(WORKS[0]);
+    }
   </script>
 </body>
 </html>
