@@ -151,6 +151,35 @@
       align-items: flex-start;
     }
 
+    .viewerTop.is-idle {
+      justify-content: flex-end;
+      text-align: right;
+    }
+
+    .viewerTop.is-idle .selectedKicker,
+    .viewerTop.is-idle .workTitle {
+      text-align: right;
+    }
+
+    .viewerTop.is-idle .workTitle {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .viewerTop.is-idle .workTitle::after {
+      content: "→";
+      color: var(--cyan);
+      font-weight: 400;
+      animation: nudgeRight 1.8s ease-in-out infinite;
+    }
+
+    @keyframes nudgeRight {
+      0%, 100% { transform: translateX(0); opacity: .55; }
+      50% { transform: translateX(5px); opacity: 1; }
+    }
+
     .selectedKicker {
       font-size: 9.5px;
       letter-spacing: 1.8px;
@@ -176,6 +205,8 @@
       white-space: nowrap;
       padding-top: 3px;
     }
+
+    .viewerTop.is-idle .status { display: none; }
 
     /* splat mount */
     #splatMount {
@@ -786,7 +817,7 @@
 
     <!-- center: viewer -->
     <main class="panel viewerShell">
-      <div class="viewerTop">
+      <div class="viewerTop" id="viewerTop">
         <div>
           <div class="selectedKicker" id="selectedKicker">Selected work</div>
           <div class="workTitle" id="workTitle">Select a work</div>
@@ -944,6 +975,7 @@
     const worksListEl    = document.getElementById("worksList");
     const titleEl        = document.getElementById("workTitle");
     const kickerEl       = document.getElementById("selectedKicker");
+    const viewerTopEl    = document.getElementById("viewerTop");
     const statusEl       = document.getElementById("status");
     const mintBtn        = document.getElementById("mintBtn");
     const mintNote       = document.getElementById("mintNote");
@@ -1413,6 +1445,7 @@
       titleEl.textContent  = work.title;
       kickerEl.textContent = idx >= 0 ? `${String(idx + 1).padStart(2, "0")} / 10` : "Selected work";
       mintBtn.disabled     = !MINT_ACTIVE || !work.canMint;
+      viewerTopEl.classList.remove("is-idle");
       renderList();
     }
 
@@ -1703,9 +1736,10 @@
       }
       currentWork = null;
       titleEl.textContent  = "Select a work";
-      kickerEl.textContent = "Selected work";
+      kickerEl.textContent = "Choose from the list";
       statusEl.textContent = "Idle";
       mintBtn.disabled     = true;
+      viewerTopEl.classList.add("is-idle");
       mount.classList.remove("is-loading", "is-loaded", "has-error");
       hideDesktopOnlyNotice();
       previewImage.src = imageForDevice(IDLE_IMAGE);
