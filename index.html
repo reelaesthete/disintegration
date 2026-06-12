@@ -200,9 +200,6 @@
     #splatMount.show-still canvas { mix-blend-mode: screen; }
     #splatMount.hide-still canvas { mix-blend-mode: normal; }
 
-    /* iOS Safari: skip the screen blend — it's an expensive compositing
-       path on Mobile Safari and a frequent source of glitches. Detection
-       via -webkit-touch-callout matches iOS WebKit only (not macOS Safari). */
     @supports (-webkit-touch-callout: none) {
       #splatMount.show-still canvas { mix-blend-mode: normal; }
     }
@@ -660,7 +657,6 @@
       }
       #splatMount { min-height: 460px; }
       .worksList { overflow: visible; }
-      /* lighter shadow + simpler gradient → cheaper paint on mobile */
       .panel { box-shadow: 0 8px 22px var(--shadow); }
     }
 
@@ -791,25 +787,12 @@
     const AUDIO_SRC   = "https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev/DISINTEGRATION-CROSS.mp3";
 
     // ── device + capability detection ───────────────────────────────
-    // Phones get a static-only preview path: no three.js, no audio, no PLY.
     const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 768;
-
-    // Mobile defaults to still preview, but a "Try interactive viewer" button
-    // lets the user opt in to the full WebGL path. In-memory only — reload
-    // returns to the safe default, which also gives a clean recovery if the
-    // GPU couldn't handle it.
     let mobileOverride = false;
     const usePreviewOnly = () => isMobile && !mobileOverride;
 
-    // Conservative "is this a weak GPU/CPU?" heuristic — used to pick pixel
-    // ratio, antialiasing, and powerPreference. Both values are undefined on
-    // Safari, so default high to avoid penalising Apple silicon.
     const cores  = navigator.hardwareConcurrency ?? 8;
     const memGB  = navigator.deviceMemory        ?? 8;
-
-    // Safari (especially iOS) is more prone to WebGL context loss and GPU
-    // memory pressure. We only flag *mobile* Safari as needing safer defaults
-    // — desktop Safari on Apple Silicon stays at full quality.
     const isSafari   = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     const safariSafe = isSafari && isMobile;
 
@@ -869,12 +852,7 @@
     const byId      = new Map(WORKS.map(w => [w.id, w]));
     const indexById = new Map(WORKS.map((w, i) => [w.id, i]));
     const IDLE_IMAGE = WORKS[0].image;
-
-    // Cloudinary lets us downsize for the device with a URL swap.
-    // Mobile gets ~half the pixels (~25 % of the bytes) for the still preview.
     const imageForDevice = url => isMobile ? url.replace("w_1200", "w_700") : url;
-
-    // Preload only the idle preview eagerly. The other nine load on demand.
     (function preloadIdle() {
       const img = new Image();
       img.decoding = "async";
@@ -922,7 +900,6 @@
     const goToWork = id => { location.hash = `#/work/${encodeURIComponent(id)}`; };
 
     // ── three.js — dynamically imported, desktop only ───────────────
-    // Importing here (not at the top) keeps ~800 KB of WebGL code off mobile.
     let THREE = null;
     let SparkRenderer = null;
     let SplatMesh = null;
@@ -950,7 +927,7 @@
       if (renderer || webglInitTried) return renderer != null;
       webglInitTried = true;
 
-      // WebGL 2 is required by Spark 2.x — fail loudly if unavailable.
+
       const test = document.createElement("canvas");
       if (!test.getContext("webgl2")) {
         showWebGLError();
@@ -959,15 +936,11 @@
 
       await ensureThreeStack();
 
-      // Wrap init in try/catch so a Safari throw doesn't leave the viewer
-      // permanently stuck — resetting webglInitTried lets the user retry.
       try {
         scene  = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(60, 1, 0.05, 2000);
         camera.position.set(0, 0, DEFAULT_VIEW_RADIUS);
 
-        // Cap pixel ratio aggressively on low-end / mobile — biggest single
-        // GPU win for weak hardware.
         const maxPR = lowEnd ? 1 : (isMobile ? 1 : 2);
         renderer = new THREE.WebGLRenderer({
           antialias: !lowEnd && !isMobile,
@@ -1026,9 +999,6 @@
       mount.appendChild(msg);
     }
 
-    // Demand-based render loop. We only paint when something changed —
-    // either autoOrbit is running, the user is interacting, or `needsRender`
-    // was set explicitly. Idle desktops drop to ~0% GPU.
     function tick() {
       if (autoOrbit && !isDown) {
         yaw += orbitSpeed;
@@ -1064,7 +1034,6 @@
     }
     new ResizeObserver(resize).observe(mount);
 
-    // Stop rendering when the tab is hidden — saves battery + heat.
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopLoop();
       else if (renderer) startLoop();
@@ -1236,7 +1205,6 @@
       toggleOrbitBtn.disabled = true;
       resetViewBtn.disabled   = true;
       toggleStillBtn.disabled = false;
-      // Replace the loading box with the "view on desktop" notice.
       loadingBox.style.display     = "none";
       desktopOnlyBox.style.display = "block";
       mount.classList.add("show-desktop-notice");
@@ -1251,8 +1219,6 @@
       const ok = await initWebGL();
       if (!ok) return;
 
-      // Race protection: each loadWork bumps the token. Any in-flight load
-      // for a previous token must bail before mutating shared state.
       const token = ++loadToken;
 
       if (currentSplat) {
@@ -1283,9 +1249,6 @@
           s.visible = false; // keep hidden until centered, to avoid the pop-in jump
           scene.add(s);
           currentSplat = s;
-
-          // Safety timeout: if Spark never fires onLoad, reveal whatever loaded
-          // rather than leaving the viewer trapped in loading state forever.
           setTimeout(() => resolve(s), 28000);
         });
 
@@ -1314,9 +1277,6 @@
       }
     }
 
-    // ── prefetch on hover ───────────────────────────────────────────
-    // Warms the HTTP cache so the next click feels instant. Phones skip this
-    // — bandwidth there is precious and the desktop path is gated anyway.
     const prefetched = new Set();
     function prefetchSplat(work) {
       if (!work?.url || prefetched.has(work.id)) return;
@@ -1357,8 +1317,6 @@
     }
 
     // ── audio ───────────────────────────────────────────────────────
-    // src is unset in HTML and only assigned on first user gesture — phones
-    // therefore never fetch the ~5–15 MB audio file.
     const audio    = document.getElementById("ambientAudio");
     const audioBtn = document.getElementById("toggleAudio");
     let audioStarted = false;
@@ -1442,9 +1400,6 @@
     });
 
     // ── mobile opt-in to full WebGL viewer ──────────────────────────
-    // User explicitly chose the interactive path despite the warning. Promote
-    // the buttons, unlock audio, and re-enter loadWork on the current work so
-    // it takes the desktop branch this time.
     document.getElementById("tryInteractiveBtn")?.addEventListener("click", async () => {
       if (mobileOverride) return;
       mobileOverride = true;
@@ -1453,8 +1408,6 @@
       mintNote.textContent = "Select a work. The selected object can be acquired while available.";
       toggleOrbitBtn.disabled = false;
       resetViewBtn.disabled   = false;
-      // Let the UI commit (button state, notice hide, layout) before Safari
-      // starts the expensive WebGL init. Avoids visible jank during opt-in.
       await new Promise(requestAnimationFrame);
       if (currentWork) loadWork(currentWork);
     });
