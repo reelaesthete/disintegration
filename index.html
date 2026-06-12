@@ -200,6 +200,9 @@
     #splatMount.show-still canvas { mix-blend-mode: screen; }
     #splatMount.hide-still canvas { mix-blend-mode: normal; }
 
+    /* iOS Safari: skip the screen blend — it's an expensive compositing
+       path on Mobile Safari and a frequent source of glitches. Detection
+       via -webkit-touch-callout matches iOS WebKit only (not macOS Safari). */
     @supports (-webkit-touch-callout: none) {
       #splatMount.show-still canvas { mix-blend-mode: normal; }
     }
@@ -285,6 +288,17 @@
     #splatMount:not(.is-loading) .loadingVeil { opacity: 0; visibility: hidden; transition: opacity .22s ease, visibility 0s linear .24s; }
     #splatMount.show-desktop-notice .loadingVeil { opacity: 1; visibility: visible; transition: none; }
 
+    /* Error state: keep the loading box visible after a failure so the user
+       can read why it failed instead of seeing an empty viewer. */
+    #splatMount.has-error .loadingVeil {
+      opacity: 1;
+      visibility: visible;
+      transition: none;
+    }
+    #splatMount.has-error .loadingBox          { border-color: hsla(40, 64%, 64%, 0.42); }
+    #splatMount.has-error .loadingBox .lb-title { color: hsla(40, 64%, 80%, 0.95); }
+    #splatMount.has-error .loadingBox::after    { animation: none; }
+
     #splatMount.is-loaded .previewLayer   { opacity: .40; visibility: visible; transition: opacity .55s ease; }
     #splatMount.show-still .previewLayer  { opacity: .54; visibility: visible; }
     #splatMount.hide-still .previewLayer  { opacity: 0; visibility: hidden; transition: opacity .35s ease, visibility 0s linear .38s; }
@@ -296,9 +310,10 @@
       text-transform: uppercase;
       color: hsla(186, 100%, 86%, 0.90);
       border: 1px solid hsla(186, 100%, 76%, 0.26);
-      background: hsla(214, 58%, 5%, 0.72);
-      padding: 10px 14px;
-      min-width: 164px;
+      background: hsla(214, 58%, 5%, 0.78);
+      padding: 12px 16px;
+      min-width: 240px;
+      max-width: 280px;
       text-align: center;
       box-shadow: 0 0 24px hsla(186, 100%, 76%, 0.07);
       position: relative;
@@ -320,6 +335,47 @@
 
     @keyframes loadingScan {
       to { transform: translateX(100%); }
+    }
+
+    /* keep content above the scan-line pseudo-element */
+    .loadingBox > * { position: relative; z-index: 1; }
+
+    .loadingBox .lb-title  { line-height: 1.2; }
+
+    .loadingBox .lb-detail {
+      margin-top: 8px;
+      font-size: 9.5px;
+      letter-spacing: .9px;
+      color: hsla(186, 100%, 86%, 0.64);
+      min-height: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .loadingBox .lb-bar {
+      margin: 10px auto 0;
+      height: 2px;
+      width: 84%;
+      background: hsla(186, 100%, 76%, 0.16);
+      overflow: hidden;
+      border-radius: 1px;
+    }
+
+    .loadingBox .lb-fill {
+      height: 100%;
+      width: 0%;
+      background: hsla(186, 100%, 80%, 0.92);
+      box-shadow: 0 0 8px hsla(186, 100%, 80%, 0.5);
+      transition: width .25s ease-out;
+    }
+
+    .loadingBox .lb-note {
+      margin: 12px auto 0;
+      font-size: 8.5px;
+      letter-spacing: .25px;
+      text-transform: none;
+      color: var(--dim);
+      line-height: 1.5;
+      max-width: 28ch;
     }
 
     /* mobile "view on desktop" notice — shown in place of loading box */
@@ -657,6 +713,7 @@
       }
       #splatMount { min-height: 460px; }
       .worksList { overflow: visible; }
+      /* lighter shadow + simpler gradient → cheaper paint on mobile */
       .panel { box-shadow: 0 8px 22px var(--shadow); }
     }
 
@@ -742,7 +799,12 @@
           <img id="previewImage" alt="" decoding="async" />
         </div>
         <div class="loadingVeil" id="loadingVeil" aria-hidden="true">
-          <div class="loadingBox" id="loadingBox">Loading object</div>
+          <div class="loadingBox" id="loadingBox">
+            <div class="lb-title" id="loadingTitle">Loading object</div>
+            <div class="lb-detail" id="loadingDetail">Connecting…</div>
+            <div class="lb-bar" id="loadingBar"><div class="lb-fill" id="loadingFill"></div></div>
+            <div class="lb-note">Splats are large — please be patient. Some take 30+ seconds.</div>
+          </div>
           <div class="desktopOnlyBox" id="desktopOnlyBox" style="display:none">
             View on desktop
             <span class="dob-sub">Interactive 3D viewer recommended on a larger screen</span>
@@ -787,12 +849,25 @@
     const AUDIO_SRC   = "https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev/DISINTEGRATION-CROSS.mp3";
 
     // ── device + capability detection ───────────────────────────────
+    // Phones get a static-only preview path: no three.js, no audio, no PLY.
     const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 768;
+
+    // Mobile defaults to still preview, but a "Try interactive viewer" button
+    // lets the user opt in to the full WebGL path. In-memory only — reload
+    // returns to the safe default, which also gives a clean recovery if the
+    // GPU couldn't handle it.
     let mobileOverride = false;
     const usePreviewOnly = () => isMobile && !mobileOverride;
 
+    // Conservative "is this a weak GPU/CPU?" heuristic — used to pick pixel
+    // ratio, antialiasing, and powerPreference. Both values are undefined on
+    // Safari, so default high to avoid penalising Apple silicon.
     const cores  = navigator.hardwareConcurrency ?? 8;
     const memGB  = navigator.deviceMemory        ?? 8;
+
+    // Safari (especially iOS) is more prone to WebGL context loss and GPU
+    // memory pressure. We only flag *mobile* Safari as needing safer defaults
+    // — desktop Safari on Apple Silicon stays at full quality.
     const isSafari   = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     const safariSafe = isSafari && isMobile;
 
@@ -813,6 +888,7 @@
       "shrapnel-is-a-promise":                             { x: Math.PI,  y: Math.PI,  z: 0 },
       "at-the-speed-of-fallen-gods":                       { x: Math.PI,  y: Math.PI,  z: 0 },
     };
+
 
     const SPLAT_TARGET_RADIUS = 2.32;
     const DEFAULT_VIEW_RADIUS = 1.82;
@@ -852,7 +928,12 @@
     const byId      = new Map(WORKS.map(w => [w.id, w]));
     const indexById = new Map(WORKS.map((w, i) => [w.id, i]));
     const IDLE_IMAGE = WORKS[0].image;
+
+    // Cloudinary lets us downsize for the device with a URL swap.
+    // Mobile gets ~half the pixels (~25 % of the bytes) for the still preview.
     const imageForDevice = url => isMobile ? url.replace("w_1200", "w_700") : url;
+
+    // Preload only the idle preview eagerly. The other nine load on demand.
     (function preloadIdle() {
       const img = new Image();
       img.decoding = "async";
@@ -873,6 +954,23 @@
     const previewImage   = document.getElementById("previewImage");
     const loadingBox     = document.getElementById("loadingBox");
     const desktopOnlyBox = document.getElementById("desktopOnlyBox");
+    const loadingTitle   = document.getElementById("loadingTitle");
+    const loadingDetail  = document.getElementById("loadingDetail");
+    const loadingBar     = document.getElementById("loadingBar");
+    const loadingFill    = document.getElementById("loadingFill");
+
+    // Single entrypoint for updating any part of the loading box. Pass only
+    // the fields that should change; pass pct:false to hide the bar entirely.
+    function setLoading({ title, detail, pct } = {}) {
+      if (title  != null) loadingTitle.textContent  = title;
+      if (detail != null) loadingDetail.textContent = detail;
+      if (pct === false) {
+        loadingBar.style.visibility = "hidden";
+      } else if (typeof pct === "number") {
+        loadingBar.style.visibility = "visible";
+        loadingFill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+      }
+    }
 
     mount.addEventListener("contextmenu", e => e.preventDefault());
     mount.addEventListener("dragstart",   e => e.preventDefault());
@@ -900,6 +998,7 @@
     const goToWork = id => { location.hash = `#/work/${encodeURIComponent(id)}`; };
 
     // ── three.js — dynamically imported, desktop only ───────────────
+    // Importing here (not at the top) keeps ~800 KB of WebGL code off mobile.
     let THREE = null;
     let SparkRenderer = null;
     let SplatMesh = null;
@@ -923,20 +1022,29 @@
     let loopActive   = false;
     let needsRender  = false;
 
+    // Hard cap on a single loadWork call. Even if a browser stalls inside
+    // fetch, import, or SparkJS, the UI will become a readable error state.
+    const LOAD_TIMEOUT_MS = 90000;
+
     async function initWebGL() {
       if (renderer || webglInitTried) return renderer != null;
       webglInitTried = true;
 
-
+      setLoading({ detail: "Checking WebGL 2…", pct: 8 });
       const test = document.createElement("canvas");
       if (!test.getContext("webgl2")) {
-        showWebGLError();
+        showWebGLError("This browser does not support WebGL 2");
         return false;
       }
 
-      await ensureThreeStack();
-
       try {
+        console.log("[loader] loading 3D libraries");
+        setLoading({ detail: "Loading 3D libraries…", pct: 10 });
+        await withTimeout(ensureThreeStack(), 15000, "3D libraries timed out");
+
+        console.log("[loader] initializing WebGL");
+        setLoading({ detail: "Initializing WebGL…", pct: 14 });
+
         scene  = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(60, 1, 0.05, 2000);
         camera.position.set(0, 0, DEFAULT_VIEW_RADIUS);
@@ -954,14 +1062,11 @@
         renderer.setClearAlpha(0);
         mount.appendChild(renderer.domElement);
 
-        // Graceful recovery from context loss (common on iGPUs with big splats).
         renderer.domElement.addEventListener("webglcontextlost", e => {
           e.preventDefault();
           statusEl.textContent = "GPU limit reached — try again";
           mount.classList.remove("is-loading");
           stopLoop();
-          // If the user opted in on mobile and the GPU couldn't take it, fall
-          // back to preview so they don't get stuck in a crash loop.
           if (mobileOverride) {
             mobileOverride = false;
             statusEl.textContent = "GPU limit reached — falling back to preview";
@@ -977,28 +1082,35 @@
 
         resize();
         startLoop();
+        setLoading({ detail: "Viewer ready…", pct: 18 });
+        console.log("[loader] init webgl ok");
         return true;
       } catch (err) {
         console.error("WebGL init failed:", err);
         webglInitTried = false;
-        showWebGLError();
+        const msg = String(err?.message || err);
+        const detail = msg.includes("libraries")
+          ? "3D libraries failed to load · reload or try another browser"
+          : msg.includes("WebGL")
+            ? "WebGL initialization timed out · reload to retry"
+            : /import|module|specifier|fetch|network/i.test(msg)
+              ? "3D library failed to load · try reloading or use a recent Chrome / Safari 16.4+"
+              : "3D viewer failed to initialise · reload to retry";
+        showWebGLError(detail);
         return false;
       }
     }
 
-    function showWebGLError() {
-      statusEl.textContent = "WebGL 2 not supported";
-      loadingBox.textContent = "WebGL 2 required";
+    function showWebGLError(detail = "Viewer unavailable in this browser") {
+      statusEl.textContent = "Viewer unavailable";
       mount.classList.remove("is-loading");
-      const msg = document.createElement("div");
-      msg.style.cssText = "position:absolute;inset:0;display:grid;place-items:center;z-index:5;padding:24px;text-align:center";
-      msg.innerHTML = `<p style="font-family:var(--mono);font-size:12px;line-height:1.7;letter-spacing:.1px;color:hsla(196,28%,92%,0.62);max-width:36ch">
-        This viewer requires WebGL 2, which is not available on this device or browser.<br><br>
-        <span style="color:hsla(186,100%,80%,0.72)">Try updating your browser, or view on a newer device.</span>
-      </p>`;
-      mount.appendChild(msg);
+      mount.classList.add("has-error");
+      setLoading({ title: "Viewer unavailable", detail, pct: false });
     }
 
+    // Demand-based render loop. We only paint when something changed —
+    // either autoOrbit is running, the user is interacting, or `needsRender`
+    // was set explicitly. Idle desktops drop to ~0% GPU.
     function tick() {
       if (autoOrbit && !isDown) {
         yaw += orbitSpeed;
@@ -1034,6 +1146,7 @@
     }
     new ResizeObserver(resize).observe(mount);
 
+    // Stop rendering when the tab is hidden — saves battery + heat.
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopLoop();
       else if (renderer) startLoop();
@@ -1141,10 +1254,120 @@
       needsRender = true;
     }, { passive: false });
 
+    // ── async utilities ─────────────────────────────────────────────
+    function withTimeout(promise, ms, message) {
+      let id;
+      const timer = new Promise((_, reject) => {
+        id = setTimeout(() => reject(new Error(message)), ms);
+      });
+      return Promise.race([promise, timer]).finally(() => clearTimeout(id));
+    }
+
+    function failLoad(detail) {
+      // A real failure state: stop all loading animation/progress so the UI
+      // never says "failed" while still looking like it is loading.
+      mount.classList.remove("is-loading", "is-loaded");
+      mount.classList.add("has-error");
+      statusEl.textContent = "Failed to load";
+      loadingFill.style.width = "0%";
+      setLoading({ title: "Load failed", detail, pct: false });
+    }
+
     // ── splat management ────────────────────────────────────────────
     let currentSplat = null;
     let currentWork  = null;
     let loadToken    = 0; // monotonic — newer loads invalidate older ones
+
+    // Stream-fetch the PLY so we can show real download progress, then hand
+    // SparkJS a blob URL. The blob is revoked once the splat is GPU-resident.
+    async function trackDownloadProgress(url, onProgress) {
+      console.log("[loader] fetch start");
+      setLoading({ detail: "Requesting object…", pct: 20 });
+
+      // Use real stall detection instead of a fixed total-download timeout.
+      // A very large file on a slow connection should not be declared failed
+      // while bytes are still arriving. The failure condition is: no first
+      // byte, or no new chunk, for the stall window.
+      const STALL_MS = 30000;
+      let fakePct = 20;
+      let fakeTimer = null;
+      let stallTimer = null;
+      const controller = new AbortController();
+
+      const clearTimers = () => {
+        if (fakeTimer) clearInterval(fakeTimer);
+        if (stallTimer) clearTimeout(stallTimer);
+        fakeTimer = null;
+        stallTimer = null;
+      };
+
+      const armStall = message => {
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          controller.abort();
+        }, STALL_MS);
+      };
+
+      fakeTimer = setInterval(() => {
+        fakePct = Math.min(fakePct + 1.5, 35);
+        setLoading({ detail: "Requesting object…", pct: fakePct });
+      }, 900);
+
+      try {
+        armStall("Object request stalled");
+        const resp = await fetch(url, { signal: controller.signal });
+        if (stallTimer) clearTimeout(stallTimer);
+        if (fakeTimer) clearInterval(fakeTimer);
+        fakeTimer = null;
+
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} during download`);
+
+        const totalHeader = resp.headers.get("content-length");
+        const total = totalHeader ? parseInt(totalHeader, 10) : 0;
+
+        setLoading({ detail: "Downloading object…", pct: 25 });
+        console.log("[loader] response headers received", { total });
+
+        const reader = resp.body?.getReader();
+        if (!reader) {
+          armStall("Object download stalled");
+          const buf = await resp.arrayBuffer();
+          if (stallTimer) clearTimeout(stallTimer);
+          onProgress(buf.byteLength || total, buf.byteLength || total || 1);
+          console.log("[loader] fetch complete");
+          return buf;
+        }
+
+        const chunks = [];
+        let received = 0;
+        while (true) {
+          armStall("Object download stalled");
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          onProgress(received, total);
+        }
+        if (stallTimer) clearTimeout(stallTimer);
+        console.log("[loader] fetch complete", { received, total });
+
+        // Assemble chunks into a single ArrayBuffer for direct use by SplatMesh.
+        const merged = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return merged.buffer;
+      } catch (err) {
+        if (err?.name === "AbortError") {
+          throw new Error("Object transfer stalled");
+        }
+        throw err;
+      } finally {
+        clearTimers();
+      }
+    }
 
     function centerAndScaleSplat(splat, targetRadius, work) {
       const box = splat.getBoundingBox?.();
@@ -1171,12 +1394,12 @@
 
     function showPreview(work) {
       hideDesktopOnlyNotice();
-      mount.classList.remove("is-loaded");
+      mount.classList.remove("is-loaded", "has-error");
       mount.classList.add("is-loading");
       applyStillLayerState();
       previewImage.src = imageForDevice(work?.image || IDLE_IMAGE);
       previewImage.alt = work ? `${work.title} preview` : "";
-      loadingBox.textContent = "Loading object";
+      setLoading({ title: "Loading object", detail: "Starting viewer…", pct: 3 });
     }
 
     function markLoaded() {
@@ -1205,58 +1428,140 @@
       toggleOrbitBtn.disabled = true;
       resetViewBtn.disabled   = true;
       toggleStillBtn.disabled = false;
+      // Replace the loading box with the "view on desktop" notice.
       loadingBox.style.display     = "none";
       desktopOnlyBox.style.display = "block";
       mount.classList.add("show-desktop-notice");
+    }
+
+    async function loadSplatDirect(url, fileBytes) {
+      console.log("[loader] creating SplatMesh", fileBytes ? "(from buffer)" : "(from url)");
+      let timeoutId = null;
+
+      return new Promise((resolve, reject) => {
+        let settled = false;
+
+        const settle = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          fn(value);
+        };
+
+        try {
+          const fileName = url.split("/").pop() || "object.ply";
+          const meshOptions = fileBytes
+            ? { fileBytes, fileName }
+            : { url };
+
+          const s = new SplatMesh({
+            ...meshOptions,
+            onLoad: () => {
+              console.log("[loader] SparkJS onLoad fired");
+              settle(resolve, s);
+            },
+          });
+
+          s.visible = false;
+          scene.add(s);
+          currentSplat = s;
+
+          timeoutId = setTimeout(() => {
+            settle(reject, new Error("3D display timed out"));
+          }, 60000);
+        } catch (err) {
+          settle(reject, err);
+        }
+      });
     }
 
     async function loadWork(work) {
       if (!work) return;
       if (usePreviewOnly()) { loadWorkMobile(work); return; }
 
-      hideDesktopOnlyNotice();
-
-      const ok = await initWebGL();
-      if (!ok) return;
-
-      const token = ++loadToken;
-
-      if (currentSplat) {
-        scene.remove(currentSplat);
-        currentSplat.dispose?.();
-        currentSplat = null;
-      }
-
       currentWork = work;
-      userHasInteracted = false;
       setSelectedUI(work);
       showPreview(work);
       statusEl.textContent = "Loading…";
+      console.log("[loader] selected", work.id);
 
-      const loadStart = Date.now();
-      const elapsedTimer = setInterval(() => {
-        if (loadToken !== token || !mount.classList.contains("is-loading")) {
-          clearInterval(elapsedTimer);
-          return;
+      const token = ++loadToken;
+
+      let prepTimer = null;
+      let slowNoticeTimer = null;
+
+      const failCurrentLoad = detail => {
+        if (loadToken !== token) return;
+        if (prepTimer) clearInterval(prepTimer);
+        if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
+
+        if (currentSplat) {
+          scene?.remove(currentSplat);
+          currentSplat.dispose?.();
+          currentSplat = null;
         }
-        const s = Math.floor((Date.now() - loadStart) / 1000);
-        loadingBox.textContent = `Loading object · ${s}s`;
-      }, 500);
+
+        failLoad(detail);
+      };
+
+      // Soft watchdog only. It never marks failure by itself because a huge
+      // splat can still be legitimately loading. Real failures come from
+      // phase-specific stall/timeout checks below.
+      slowNoticeTimer = setTimeout(() => {
+        if (loadToken !== token) return;
+        setLoading({ detail: "Still loading · this object is large…" });
+        statusEl.textContent = "Still loading…";
+      }, 45000);
 
       try {
-        const splat = await new Promise(resolve => {
-          const s = new SplatMesh({ url: work.url, onLoad: () => resolve(s) });
-          s.visible = false; // keep hidden until centered, to avoid the pop-in jump
-          scene.add(s);
-          currentSplat = s;
-          setTimeout(() => resolve(s), 28000);
-        });
+        setLoading({ detail: "Starting viewer…", pct: 3 });
+        await new Promise(requestAnimationFrame);
 
-        clearInterval(elapsedTimer);
-        if (loadToken !== token) return; // a newer load is in flight
+        const ok = await withTimeout(initWebGL(), 25000, "WebGL initialization timed out");
+        if (loadToken !== token) return;
+        if (!ok) return;
+
+        if (currentSplat) {
+          scene.remove(currentSplat);
+          currentSplat.dispose?.();
+          currentSplat = null;
+        }
+        userHasInteracted = false;
+
+        setLoading({ detail: "Requesting object…", pct: 20 });
+        const fileBytes = await trackDownloadProgress(work.url, (got, total) => {
+          if (loadToken !== token) return;
+          const gotMB   = (got / 1048576).toFixed(1);
+          const totalMB = total ? (total / 1048576).toFixed(1) : null;
+          const pct     = total ? 25 + Math.min(60, (got / total) * 60) : Math.min(85, 25 + got / 1048576);
+          setLoading({
+            detail: totalMB ? `${gotMB} / ${totalMB} MB` : `Downloading object · ${gotMB} MB`,
+            pct,
+          });
+        });
+        if (loadToken !== token) return;
+
+        const prepStart = Date.now();
+        setLoading({ detail: "Preparing display…", pct: 88 });
+        prepTimer = setInterval(() => {
+          if (loadToken !== token) { clearInterval(prepTimer); return; }
+          const s = Math.floor((Date.now() - prepStart) / 1000);
+          const pct = Math.min(98, 88 + s * 0.5);
+          setLoading({ detail: `Preparing display · ${s}s`, pct });
+        }, 1000);
+
+        // Pass the already-downloaded bytes directly to SplatMesh —
+        // avoids a second fetch of the same large file.
+        const splat = await loadSplatDirect(work.url, fileBytes);
+
+        clearInterval(prepTimer);
+        prepTimer = null;
+        if (loadToken !== token) return;
 
         const profile = getViewProfile(work);
-        centerAndScaleSplat(splat, profile.targetRadius, work);
+        const centered = centerAndScaleSplat(splat, profile.targetRadius, work);
+        console.log("[loader] centering/scaling", centered ? "ok" : "failed");
+
         if (!userHasInteracted) {
           yaw = 0; pitch = 0;
           radius = profile.viewRadius;
@@ -1264,19 +1569,34 @@
           setAutoOrbit(!reduceMotion);
           updateCamera();
         }
+
         splat.visible = true;
         needsRender = true;
+        setLoading({ detail: "Display ready", pct: 100 });
+        console.log("[loader] visible");
         markLoaded();
+
+        if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
       } catch (err) {
-        clearInterval(elapsedTimer);
         if (loadToken !== token) return;
         console.error("Splat load failed:", err);
-        mount.classList.remove("is-loading");
-        loadingBox.textContent = "Load failed";
-        statusEl.textContent   = "Failed to load";
+
+        const msg = String(err?.message || err);
+        const detail =
+          msg.includes("libraries") ? "3D libraries failed to load · reload or try another browser" :
+          msg.includes("WebGL") ? "WebGL could not start in this browser" :
+          msg.includes("transfer") ? "Object transfer stalled · select another work to retry" :
+          msg.includes("download") || msg.includes("HTTP") ? "Object download failed · select another work to retry" :
+          msg.includes("display") ? "3D display timed out · select another work to retry" :
+          "Viewer failed · select another work to retry";
+
+        failCurrentLoad(detail);
       }
     }
 
+    // ── prefetch on hover ───────────────────────────────────────────
+    // Warms the HTTP cache so the next click feels instant. Phones skip this
+    // — bandwidth there is precious and the desktop path is gated anyway.
     const prefetched = new Set();
     function prefetchSplat(work) {
       if (!work?.url || prefetched.has(work.id)) return;
@@ -1317,6 +1637,8 @@
     }
 
     // ── audio ───────────────────────────────────────────────────────
+    // src is unset in HTML and only assigned on first user gesture — phones
+    // therefore never fetch the ~5–15 MB audio file.
     const audio    = document.getElementById("ambientAudio");
     const audioBtn = document.getElementById("toggleAudio");
     let audioStarted = false;
@@ -1384,7 +1706,7 @@
       kickerEl.textContent = "Selected work";
       statusEl.textContent = "Idle";
       mintBtn.disabled     = true;
-      mount.classList.remove("is-loading", "is-loaded");
+      mount.classList.remove("is-loading", "is-loaded", "has-error");
       hideDesktopOnlyNotice();
       previewImage.src = imageForDevice(IDLE_IMAGE);
       previewImage.alt = "";
@@ -1400,6 +1722,9 @@
     });
 
     // ── mobile opt-in to full WebGL viewer ──────────────────────────
+    // User explicitly chose the interactive path despite the warning. Promote
+    // the buttons, unlock audio, and re-enter loadWork on the current work so
+    // it takes the desktop branch this time.
     document.getElementById("tryInteractiveBtn")?.addEventListener("click", async () => {
       if (mobileOverride) return;
       mobileOverride = true;
@@ -1408,6 +1733,8 @@
       mintNote.textContent = "Select a work. The selected object can be acquired while available.";
       toggleOrbitBtn.disabled = false;
       resetViewBtn.disabled   = false;
+      // Let the UI commit (button state, notice hide, layout) before Safari
+      // starts the expensive WebGL init. Avoids visible jank during opt-in.
       await new Promise(requestAnimationFrame);
       if (currentWork) loadWork(currentWork);
     });
