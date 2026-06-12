@@ -7,11 +7,15 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev" crossorigin>
+  <link rel="preconnect" href="https://res.cloudinary.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 
-  <!-- preload JS modules so they're fetched in parallel with HTML parse -->
-  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js">
-  <link rel="modulepreload" href="https://sparkjs.dev/releases/spark/2.1.0/spark.module.js">
+  <!--
+    three.js + spark are dynamically imported inside the script and only on
+    desktop (see ensureThreeStack). We skip the modulepreload tags so phones
+    never fetch ~800 KB of WebGL code they will not run.
+  -->
 
   <style>
     /* ─── tokens ─────────────────────────────────────────────────── */
@@ -196,6 +200,13 @@
     #splatMount.show-still canvas { mix-blend-mode: screen; }
     #splatMount.hide-still canvas { mix-blend-mode: normal; }
 
+    /* iOS Safari: skip the screen blend — it's an expensive compositing
+       path on Mobile Safari and a frequent source of glitches. Detection
+       via -webkit-touch-callout matches iOS WebKit only (not macOS Safari). */
+    @supports (-webkit-touch-callout: none) {
+      #splatMount.show-still canvas { mix-blend-mode: normal; }
+    }
+
     /* inner frame glow */
     #splatMount::before {
       content: "";
@@ -275,6 +286,7 @@
 
     #splatMount.is-loading .loadingVeil       { opacity: 1; visibility: visible; }
     #splatMount:not(.is-loading) .loadingVeil { opacity: 0; visibility: hidden; transition: opacity .22s ease, visibility 0s linear .24s; }
+    #splatMount.show-desktop-notice .loadingVeil { opacity: 1; visibility: visible; transition: none; }
 
     #splatMount.is-loaded .previewLayer   { opacity: .40; visibility: visible; transition: opacity .55s ease; }
     #splatMount.show-still .previewLayer  { opacity: .54; visibility: visible; }
@@ -311,6 +323,65 @@
 
     @keyframes loadingScan {
       to { transform: translateX(100%); }
+    }
+
+    /* mobile "view on desktop" notice — shown in place of loading box */
+    .desktopOnlyBox {
+      font-size: 10px;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: hsla(186, 100%, 86%, 0.84);
+      border: 1px solid hsla(186, 100%, 76%, 0.22);
+      background: hsla(214, 58%, 5%, 0.78);
+      padding: 14px 18px;
+      max-width: 220px;
+      text-align: center;
+      line-height: 1.7;
+      box-shadow: 0 0 24px hsla(186, 100%, 76%, 0.06);
+    }
+
+    .desktopOnlyBox .dob-sub {
+      display: block;
+      margin-top: 8px;
+      font-size: 9px;
+      letter-spacing: .6px;
+      text-transform: none;
+      color: var(--dim);
+    }
+
+    .desktopOnlyBox .dob-try {
+      display: block;
+      margin: 14px auto 0;
+      font-size: 9.5px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      border: 1px solid hsla(184, 100%, 72%, 0.34);
+      background: hsla(214, 58%, 5%, 0.92);
+      padding: 9px 14px;
+      cursor: pointer;
+      font-family: var(--mono);
+      pointer-events: auto;
+      transition: border-color .14s, color .14s, background .14s;
+    }
+
+    .desktopOnlyBox .dob-try:hover,
+    .desktopOnlyBox .dob-try:focus-visible {
+      border-color: var(--stroke-accent);
+      background: hsla(211, 44%, 8%, 0.96);
+      color: hsla(186, 100%, 94%, 1);
+      outline: none;
+    }
+
+    .desktopOnlyBox .dob-warn {
+      display: block;
+      margin: 8px auto 0;
+      font-size: 8.5px;
+      letter-spacing: .4px;
+      text-transform: none;
+      color: hsla(40, 64%, 64%, 0.62);
+      line-height: 1.5;
+      max-width: 24ch;
     }
 
     /* ─── viewer bottom bar ──────────────────────────────────────── */
@@ -425,7 +496,6 @@
       flex-direction: column;
       overflow-y: auto;
       overflow-x: hidden;
-      /* subtle scrollbar */
       scrollbar-width: thin;
       scrollbar-color: hsla(197, 42%, 72%, 0.16) transparent;
     }
@@ -585,9 +655,22 @@
         grid-template-columns: 1fr;
         height: auto;
         min-height: 100%;
+        padding: 14px;
+        gap: 12px;
       }
       #splatMount { min-height: 460px; }
       .worksList { overflow: visible; }
+      /* lighter shadow + simpler gradient → cheaper paint on mobile */
+      .panel { box-shadow: 0 8px 22px var(--shadow); }
+    }
+
+    /* ─── reduced motion ─────────────────────────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        transition-duration: 0.001ms !important;
+      }
+      #splatMount.is-loading .loadingBox::after { animation: none; }
     }
   </style>
 
@@ -610,8 +693,8 @@
     <div class="mb-rule"></div>
     <div class="mb-head">This work requires a desktop browser</div>
     <p class="mb-body">
-      These are <em>interactive Gaussian splat objects</em> — 
-      live, volumetric, navigable in three dimensions. 
+      These are <em>interactive Gaussian splat objects</em> —
+      live, volumetric, navigable in three dimensions.
       That experience does not exist on this screen.
     </p>
     <button class="mb-dismiss" id="mbDismiss">Continue to preview anyway</button>
@@ -660,10 +743,16 @@
 
       <div id="splatMount">
         <div class="previewLayer" id="previewLayer" aria-hidden="true">
-          <img id="previewImage" alt="" />
+          <img id="previewImage" alt="" decoding="async" />
         </div>
         <div class="loadingVeil" id="loadingVeil" aria-hidden="true">
           <div class="loadingBox" id="loadingBox">Loading object</div>
+          <div class="desktopOnlyBox" id="desktopOnlyBox" style="display:none">
+            View on desktop
+            <span class="dob-sub">Interactive 3D viewer recommended on a larger screen</span>
+            <button class="dob-try" id="tryInteractiveBtn" type="button">Try interactive viewer →</button>
+            <span class="dob-warn">May crash or stutter on older devices</span>
+          </div>
         </div>
       </div>
 
@@ -682,9 +771,8 @@
       </div>
     </main>
 
-    <audio id="ambientAudio" loop preload="auto"
-    src="https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev/DISINTEGRATION-CROSS.mp3">
-    </audio>
+    <!-- audio src is set lazily on first user gesture (desktop only) -->
+    <audio id="ambientAudio" loop preload="none"></audio>
 
     <!-- right: works list -->
     <aside class="panel worksPanel">
@@ -698,28 +786,55 @@
   </div>
 
   <script type="module">
-    import * as THREE from "three";
-    import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
-
+    // ── config ──────────────────────────────────────────────────────
     const MINT_ACTIVE = true;
+    const AUDIO_SRC   = "https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev/DISINTEGRATION-CROSS.mp3";
 
+    // ── device + capability detection ───────────────────────────────
+    // Phones get a static-only preview path: no three.js, no audio, no PLY.
+    const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 768;
+
+    // Mobile defaults to still preview, but a "Try interactive viewer" button
+    // lets the user opt in to the full WebGL path. In-memory only — reload
+    // returns to the safe default, which also gives a clean recovery if the
+    // GPU couldn't handle it.
+    let mobileOverride = false;
+    const usePreviewOnly = () => isMobile && !mobileOverride;
+
+    // Conservative "is this a weak GPU/CPU?" heuristic — used to pick pixel
+    // ratio, antialiasing, and powerPreference. Both values are undefined on
+    // Safari, so default high to avoid penalising Apple silicon.
+    const cores  = navigator.hardwareConcurrency ?? 8;
+    const memGB  = navigator.deviceMemory        ?? 8;
+
+    // Safari (especially iOS) is more prone to WebGL context loss and GPU
+    // memory pressure. We only flag *mobile* Safari as needing safer defaults
+    // — desktop Safari on Apple Silicon stays at full quality.
+    const isSafari   = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    const safariSafe = isSafari && isMobile;
+
+    const lowEnd = cores <= 4 || memGB <= 4 || safariSafe;
+
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    // ── work data ───────────────────────────────────────────────────
     const SPLAT_ROTATION_BY_ID = {
-      "the-place-that-knows-no-names":                     { x: Math.PI,  y: Math.PI,  z: 0 }, // 1
-      "a-promise-a-place-that-is-no-place":                { x: Math.PI,  y: 0,        z: 0 }, // 2
-      "a-piece-of-sky-and-water-to-call-your-own":         { x: Math.PI,  y: 0,        z: 0 }, // 3 ✓
-      "one-day-you-will-find-me-hidden-among-the-flowers": { x: Math.PI,  y: 0,        z: 0 }, // 4
-      "the-temple":                                        { x: Math.PI,  y: 0,        z: 0 }, // 5
-      "one-day-all-together":                              { x: Math.PI,  y: Math.PI,  z: 0 }, // 6
-      "ice-queen":                                         { x: 0,        y: Math.PI,  z: 0 }, // 7
-      "hiroshima-mon-amour":                               { x: Math.PI,  y: Math.PI,  z: 0 }, // 8
-      "shrapnel-is-a-promise":                             { x: Math.PI,  y: Math.PI,  z: 0 }, // 9
-      "at-the-speed-of-fallen-gods":                       { x: Math.PI,  y: Math.PI,  z: 0 }, // 10
+      "the-place-that-knows-no-names":                     { x: Math.PI,  y: Math.PI,  z: 0 },
+      "a-promise-a-place-that-is-no-place":                { x: Math.PI,  y: 0,        z: 0 },
+      "a-piece-of-sky-and-water-to-call-your-own":         { x: Math.PI,  y: 0,        z: 0 },
+      "one-day-you-will-find-me-hidden-among-the-flowers": { x: Math.PI,  y: 0,        z: 0 },
+      "the-temple":                                        { x: Math.PI,  y: 0,        z: 0 },
+      "one-day-all-together":                              { x: Math.PI,  y: Math.PI,  z: 0 },
+      "ice-queen":                                         { x: 0,        y: Math.PI,  z: 0 },
+      "hiroshima-mon-amour":                               { x: Math.PI,  y: Math.PI,  z: 0 },
+      "shrapnel-is-a-promise":                             { x: Math.PI,  y: Math.PI,  z: 0 },
+      "at-the-speed-of-fallen-gods":                       { x: Math.PI,  y: Math.PI,  z: 0 },
     };
 
-    const SPLAT_TARGET_RADIUS  = 2.32;
-    const DEFAULT_VIEW_RADIUS  = 1.82;
-    const MIN_VIEW_RADIUS      = 0.12;
-    const MAX_VIEW_RADIUS      = 5.2;
+    const SPLAT_TARGET_RADIUS = 2.32;
+    const DEFAULT_VIEW_RADIUS = 1.82;
+    const MIN_VIEW_RADIUS     = 0.12;
+    const MAX_VIEW_RADIUS     = 5.2;
 
     const VIEW_PROFILE_BY_ID = {
       "the-place-that-knows-no-names":             { targetRadius: 2.32, viewRadius: 1.40 },
@@ -730,22 +845,13 @@
       "shrapnel-is-a-promise":                     { targetRadius: 2.92, viewRadius: 1.42 },
     };
 
-    function getViewProfile(work) {
-      return VIEW_PROFILE_BY_ID[work?.id] || { targetRadius: SPLAT_TARGET_RADIUS, viewRadius: DEFAULT_VIEW_RADIUS };
-    }
-
     const SPLAT_OFFSET_BY_ID = {
       "ice-queen": { x: 0, y: -0.28, z: 0 },
     };
 
-    function getSplatOffset(work) {
-      const o = SPLAT_OFFSET_BY_ID[work?.id] || { x: 0, y: 0, z: 0 };
-      return new THREE.Vector3(o.x, o.y, o.z);
-    }
-
-    function getSplatRotation(work) {
-      return SPLAT_ROTATION_BY_ID[work?.id] || { x: 0, y: 0, z: 0 };
-    }
+    const getViewProfile  = w => VIEW_PROFILE_BY_ID[w?.id]  || { targetRadius: SPLAT_TARGET_RADIUS, viewRadius: DEFAULT_VIEW_RADIUS };
+    const getSplatRotation = w => SPLAT_ROTATION_BY_ID[w?.id] || { x: 0, y: 0, z: 0 };
+    const getSplatOffset  = w => SPLAT_OFFSET_BY_ID[w?.id]   || { x: 0, y: 0, z: 0 };
 
     const WORKS = [
       { id: "the-place-that-knows-no-names",                     title: "the place that knows no names",                      url: "https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev/disintegration01.ply", image: "https://res.cloudinary.com/dwf9tckoq/image/upload/w_1200,f_auto,q_auto/v1780671298/01_the_place_that_knows_no_names_biwqdh.png",                     acquireUrl: "https://manifold.xyz/@aesthetica/id/4059338992", canMint: true },
@@ -760,96 +866,191 @@
       { id: "at-the-speed-of-fallen-gods",                       title: "at the speed of fallen gods",                         url: "https://pub-c90c8518a43e45838718afeb759b0e5b.r2.dev/disintegration10.ply", image: "https://res.cloudinary.com/dwf9tckoq/image/upload/w_1200,f_auto,q_auto/v1780671301/10_at_the_speed_of_fallen_gods_txizuz.png",                    acquireUrl: "https://manifold.xyz/@aesthetica/id/4059330800", canMint: true },
     ];
 
-    const byId = new Map(WORKS.map(w => [w.id, w]));
-
-    // The first work's image is used as the idle/background state.
+    const byId      = new Map(WORKS.map(w => [w.id, w]));
+    const indexById = new Map(WORKS.map((w, i) => [w.id, i]));
     const IDLE_IMAGE = WORKS[0].image;
 
-    // Preload all preview images immediately so they're in the browser cache
-    // before the user clicks. Fires in background, no blocking.
-    WORKS.forEach(w => { const img = new Image(); img.src = w.image; });
+    // Cloudinary lets us downsize for the device with a URL swap.
+    // Mobile gets ~half the pixels (~25 % of the bytes) for the still preview.
+    const imageForDevice = url => isMobile ? url.replace("w_1200", "w_700") : url;
 
-    const worksListEl   = document.getElementById("worksList");
-    const titleEl       = document.getElementById("workTitle");
-    const kickerEl      = document.getElementById("selectedKicker");
-    const statusEl      = document.getElementById("status");
-    const mintBtn       = document.getElementById("mintBtn");
-    const mintNote      = document.getElementById("mintNote");
+    // Preload only the idle preview eagerly. The other nine load on demand.
+    (function preloadIdle() {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = imageForDevice(IDLE_IMAGE);
+    })();
+
+    // ── DOM refs ────────────────────────────────────────────────────
+    const worksListEl    = document.getElementById("worksList");
+    const titleEl        = document.getElementById("workTitle");
+    const kickerEl       = document.getElementById("selectedKicker");
+    const statusEl       = document.getElementById("status");
+    const mintBtn        = document.getElementById("mintBtn");
+    const mintNote       = document.getElementById("mintNote");
     const toggleOrbitBtn = document.getElementById("toggleOrbit");
-    const resetViewBtn  = document.getElementById("resetView");
+    const resetViewBtn   = document.getElementById("resetView");
     const toggleStillBtn = document.getElementById("toggleStill");
-    const mount         = document.getElementById("splatMount");
-    const previewImage  = document.getElementById("previewImage");
-    const loadingBox    = document.getElementById("loadingBox");
+    const mount          = document.getElementById("splatMount");
+    const previewImage   = document.getElementById("previewImage");
+    const loadingBox     = document.getElementById("loadingBox");
+    const desktopOnlyBox = document.getElementById("desktopOnlyBox");
 
     mount.addEventListener("contextmenu", e => e.preventDefault());
     mount.addEventListener("dragstart",   e => e.preventDefault());
     previewImage.addEventListener("dragstart", e => e.preventDefault());
 
     if (!MINT_ACTIVE) {
-      mintBtn.textContent = "Collection closed";
+      mintBtn.textContent  = "Collection closed";
       mintNote.textContent = "The mint has closed. Works remain available as live viewer objects.";
     }
 
-    // ── routing ──────────────────────────────────────────────────────
+    function hideDesktopOnlyNotice() {
+      loadingBox.style.display = "";
+      desktopOnlyBox.style.display = "none";
+      mount.classList.remove("show-desktop-notice");
+    }
+
+    // ── routing ─────────────────────────────────────────────────────
     function parseRoute() {
       const h = (location.hash || "#/").replace(/^#/, "");
       const parts = h.split("/").filter(Boolean);
-      if (parts.length === 0) return { name: "home" };
       if (parts[0] === "work" && parts[1]) return { name: "work", id: decodeURIComponent(parts[1]) };
       return { name: "home" };
     }
 
-    function goToWork(id) {
-      location.hash = `#/work/${encodeURIComponent(id)}`;
+    const goToWork = id => { location.hash = `#/work/${encodeURIComponent(id)}`; };
+
+    // ── three.js — dynamically imported, desktop only ───────────────
+    // Importing here (not at the top) keeps ~800 KB of WebGL code off mobile.
+    let THREE = null;
+    let SparkRenderer = null;
+    let SplatMesh = null;
+
+    async function ensureThreeStack() {
+      if (THREE) return;
+      const [three, spark] = await Promise.all([
+        import("three"),
+        import("@sparkjsdev/spark"),
+      ]);
+      THREE = three;
+      ({ SparkRenderer, SplatMesh } = spark);
     }
 
-    // ── three.js setup (lazy — created on first work load) ───────────
-    const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 768;
-
+    // ── three.js scene ──────────────────────────────────────────────
     let scene    = null;
     let camera   = null;
     let renderer = null;
     let spark    = null;
-    let rafId    = null;
+    let webglInitTried = false;
+    let loopActive   = false;
+    let needsRender  = false;
 
-    function initWebGL() {
-      if (renderer) return; // already initialized
+    async function initWebGL() {
+      if (renderer || webglInitTried) return renderer != null;
+      webglInitTried = true;
 
-      scene  = new THREE.Scene();
-      camera = new THREE.PerspectiveCamera(60, 1, 0.05, 2000);
-      camera.position.set(0, 0, DEFAULT_VIEW_RADIUS);
+      // WebGL 2 is required by Spark 2.x — fail loudly if unavailable.
+      const test = document.createElement("canvas");
+      if (!test.getContext("webgl2")) {
+        showWebGLError();
+        return false;
+      }
 
-      renderer = new THREE.WebGLRenderer({
-        antialias: !isMobile,
-        alpha: true,
-        powerPreference: "high-performance",
-      });
-      renderer.setPixelRatio(isMobile ? Math.min(window.devicePixelRatio || 1, 1) : Math.min(window.devicePixelRatio || 1, 2));
-      renderer.setClearAlpha(0);
-      mount.appendChild(renderer.domElement);
+      await ensureThreeStack();
 
-      // Handle WebGL context loss gracefully (common on mobile with large splats)
-      renderer.domElement.addEventListener("webglcontextlost", e => {
-        e.preventDefault();
-        statusEl.textContent = "GPU limit reached — try again";
-        mount.classList.remove("is-loading");
-      }, false);
-      renderer.domElement.addEventListener("webglcontextrestored", () => {
-        if (currentWork) loadWork(currentWork);
-      }, false);
+      // Wrap init in try/catch so a Safari throw doesn't leave the viewer
+      // permanently stuck — resetting webglInitTried lets the user retry.
+      try {
+        scene  = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(60, 1, 0.05, 2000);
+        camera.position.set(0, 0, DEFAULT_VIEW_RADIUS);
 
-      spark = new SparkRenderer({ renderer });
-      scene.add(spark);
+        // Cap pixel ratio aggressively on low-end / mobile — biggest single
+        // GPU win for weak hardware.
+        const maxPR = lowEnd ? 1 : (isMobile ? 1 : 2);
+        renderer = new THREE.WebGLRenderer({
+          antialias: !lowEnd && !isMobile,
+          alpha: true,
+          powerPreference: lowEnd ? "low-power" : "high-performance",
+          precision: "mediump",
+          stencil: false,
+          depth: true,
+        });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPR));
+        renderer.setClearAlpha(0);
+        mount.appendChild(renderer.domElement);
 
-      resize();
+        // Graceful recovery from context loss (common on iGPUs with big splats).
+        renderer.domElement.addEventListener("webglcontextlost", e => {
+          e.preventDefault();
+          statusEl.textContent = "GPU limit reached — try again";
+          mount.classList.remove("is-loading");
+          stopLoop();
+          // If the user opted in on mobile and the GPU couldn't take it, fall
+          // back to preview so they don't get stuck in a crash loop.
+          if (mobileOverride) {
+            mobileOverride = false;
+            statusEl.textContent = "GPU limit reached — falling back to preview";
+            if (currentWork) loadWork(currentWork);
+          }
+        }, false);
+        renderer.domElement.addEventListener("webglcontextrestored", () => {
+          if (currentWork) loadWork(currentWork);
+        }, false);
 
-      // Start render loop
-      rafId = renderer.setAnimationLoop(() => {
-        if (autoOrbit && !isDown) yaw += orbitSpeed;
-        updateCamera();
-        renderer.render(scene, camera);
-      });
+        spark = new SparkRenderer({ renderer });
+        scene.add(spark);
+
+        resize();
+        startLoop();
+        return true;
+      } catch (err) {
+        console.error("WebGL init failed:", err);
+        webglInitTried = false;
+        showWebGLError();
+        return false;
+      }
+    }
+
+    function showWebGLError() {
+      statusEl.textContent = "WebGL 2 not supported";
+      loadingBox.textContent = "WebGL 2 required";
+      mount.classList.remove("is-loading");
+      const msg = document.createElement("div");
+      msg.style.cssText = "position:absolute;inset:0;display:grid;place-items:center;z-index:5;padding:24px;text-align:center";
+      msg.innerHTML = `<p style="font-family:var(--mono);font-size:12px;line-height:1.7;letter-spacing:.1px;color:hsla(196,28%,92%,0.62);max-width:36ch">
+        This viewer requires WebGL 2, which is not available on this device or browser.<br><br>
+        <span style="color:hsla(186,100%,80%,0.72)">Try updating your browser, or view on a newer device.</span>
+      </p>`;
+      mount.appendChild(msg);
+    }
+
+    // Demand-based render loop. We only paint when something changed —
+    // either autoOrbit is running, the user is interacting, or `needsRender`
+    // was set explicitly. Idle desktops drop to ~0% GPU.
+    function tick() {
+      if (autoOrbit && !isDown) {
+        yaw += orbitSpeed;
+        needsRender = true;
+      }
+      if (!needsRender) return;
+      updateCamera();
+      renderer.render(scene, camera);
+      needsRender = false;
+    }
+
+    function startLoop() {
+      if (!renderer || loopActive) return;
+      loopActive = true;
+      needsRender = true;
+      renderer.setAnimationLoop(tick);
+    }
+
+    function stopLoop() {
+      if (!renderer) return;
+      loopActive = false;
+      renderer.setAnimationLoop(null);
     }
 
     function resize() {
@@ -859,20 +1060,26 @@
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      needsRender = true;
     }
     new ResizeObserver(resize).observe(mount);
-    window.addEventListener("resize", resize);
 
-    // ── orbit state ──────────────────────────────────────────────────
+    // Stop rendering when the tab is hidden — saves battery + heat.
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopLoop();
+      else if (renderer) startLoop();
+    });
+
+    // ── orbit state ─────────────────────────────────────────────────
     let isDown = false, panDrag = false, userHasInteracted = false;
     let lastX = 0, lastY = 0;
     let yaw = 0, pitch = 0, radius = DEFAULT_VIEW_RADIUS;
-    let orbitTarget = new THREE.Vector3(0, 0, 0);
-    let autoOrbit = true;
+    const orbitTarget = { x: 0, y: 0, z: 0 };
+    let autoOrbit    = !reduceMotion;
     let stillLayerOn = true;
     const orbitSpeed = 0.0016;
 
-    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
     function applyStillLayerState() {
       mount.classList.toggle("show-still", stillLayerOn);
@@ -882,41 +1089,50 @@
 
     function syncOrbitFromCamera() {
       if (!camera) return;
-      const p = camera.position.clone().sub(orbitTarget);
-      radius = p.length();
-      yaw    = Math.atan2(p.x, p.z);
-      pitch  = Math.asin(clamp(p.y / radius, -1, 1));
+      const px = camera.position.x - orbitTarget.x;
+      const py = camera.position.y - orbitTarget.y;
+      const pz = camera.position.z - orbitTarget.z;
+      radius = Math.hypot(px, py, pz);
+      yaw    = Math.atan2(px, pz);
+      pitch  = Math.asin(clamp(py / radius, -1, 1));
     }
 
     function updateCamera() {
       if (!camera) return;
-      const x = radius * Math.cos(pitch) * Math.sin(yaw);
-      const y = radius * Math.sin(pitch);
-      const z = radius * Math.cos(pitch) * Math.cos(yaw);
-      camera.position.set(x + orbitTarget.x, y + orbitTarget.y, z + orbitTarget.z);
-      camera.lookAt(orbitTarget);
+      const cp = Math.cos(pitch);
+      camera.position.set(
+        radius * cp * Math.sin(yaw) + orbitTarget.x,
+        radius * Math.sin(pitch)     + orbitTarget.y,
+        radius * cp * Math.cos(yaw) + orbitTarget.z,
+      );
+      camera.lookAt(orbitTarget.x, orbitTarget.y, orbitTarget.z);
+    }
+
+    function setAutoOrbit(on) {
+      autoOrbit = on;
+      toggleOrbitBtn.textContent = on ? "Auto-orbit: on" : "Auto-orbit: off";
+      needsRender = true;
     }
 
     function resetView() {
       const profile = getViewProfile(currentWork);
-      yaw   = 0; pitch  = 0;
+      yaw = 0; pitch = 0;
       radius = profile.viewRadius;
-      orbitTarget.set(0, 0, 0);
-      autoOrbit = false;
-      toggleOrbitBtn.textContent = "Auto-orbit: off";
+      orbitTarget.x = orbitTarget.y = orbitTarget.z = 0;
+      setAutoOrbit(false);
       updateCamera();
     }
 
-    // ── pointer ──────────────────────────────────────────────────────
+    // ── pointer ─────────────────────────────────────────────────────
     mount.addEventListener("pointerdown", e => {
+      if (!renderer) return; // mobile preview path has no interaction
       e.preventDefault();
-      isDown = true;
+      isDown  = true;
       panDrag = e.button === 2 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey;
       userHasInteracted = true;
       lastX = e.clientX; lastY = e.clientY;
       syncOrbitFromCamera();
-      autoOrbit = false;
-      toggleOrbitBtn.textContent = "Auto-orbit: off";
+      setAutoOrbit(false);
       document.body.style.overflow = "hidden";
       mount.setPointerCapture(e.pointerId);
     });
@@ -925,7 +1141,6 @@
       isDown = false; panDrag = false;
       document.body.style.overflow = "";
     }
-
     mount.addEventListener("pointerup", e => {
       endPointer();
       try { mount.releasePointerCapture(e.pointerId); } catch {}
@@ -942,183 +1157,183 @@
         orbitTarget.x = clamp(orbitTarget.x - dx * s, -1.8, 1.8);
         orbitTarget.y = clamp(orbitTarget.y + dy * s, -1.8, 1.8);
       } else {
-        yaw   += dx * 0.005;
-        pitch  = clamp(pitch + dy * 0.005, -1.2, 1.2);
+        yaw  += dx * 0.005;
+        pitch = clamp(pitch + dy * 0.005, -1.2, 1.2);
       }
+      needsRender = true;
     });
 
     mount.addEventListener("wheel", e => {
+      if (!renderer) return;
       e.preventDefault();
       e.stopPropagation();
       userHasInteracted = true;
       radius = clamp(radius + e.deltaY * 0.00145, MIN_VIEW_RADIUS, MAX_VIEW_RADIUS);
+      needsRender = true;
     }, { passive: false });
 
-    // ── splat management ─────────────────────────────────────────────
+    // ── splat management ────────────────────────────────────────────
     let currentSplat = null;
     let currentWork  = null;
+    let loadToken    = 0; // monotonic — newer loads invalidate older ones
 
-    function centerAndScaleSplat(splat, targetRadius = SPLAT_TARGET_RADIUS, work = currentWork) {
+    function centerAndScaleSplat(splat, targetRadius, work) {
       const box = splat.getBoundingBox?.();
       if (!box) return false;
       const center = new THREE.Vector3();
+      const size   = new THREE.Vector3();
       box.getCenter(center);
-      const size = new THREE.Vector3();
       box.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z);
       if (!isFinite(maxDim) || maxDim <= 0) return false;
       const scale = targetRadius / maxDim;
       const rot   = getSplatRotation(work);
+      const off   = getSplatOffset(work);
       splat.position.set(0, 0, 0);
       splat.rotation.set(rot.x, rot.y, rot.z);
       splat.scale.setScalar(scale);
       splat.updateMatrixWorld(true);
-      const correctedCenter = center.clone().multiplyScalar(scale).applyEuler(splat.rotation);
-      splat.position.copy(correctedCenter.multiplyScalar(-1));
-      splat.position.add(getSplatOffset(work));
+      const c = center.multiplyScalar(scale).applyEuler(splat.rotation);
+      splat.position.set(-c.x + off.x, -c.y + off.y, -c.z + off.z);
       splat.updateMatrixWorld(true);
+      needsRender = true;
       return true;
     }
 
     function showPreview(work) {
+      hideDesktopOnlyNotice();
       mount.classList.remove("is-loaded");
       mount.classList.add("is-loading");
       applyStillLayerState();
-      const img = work?.image || IDLE_IMAGE;
-      previewImage.src = img;
+      previewImage.src = imageForDevice(work?.image || IDLE_IMAGE);
       previewImage.alt = work ? `${work.title} preview` : "";
       loadingBox.textContent = "Loading object";
     }
 
-    function markLoaded(ok) {
+    function markLoaded() {
       mount.classList.remove("is-loading");
       mount.classList.add("is-loaded");
-      statusEl.textContent = ok ? "Loaded" : "Loaded";
+      statusEl.textContent = "Loaded";
     }
 
     function setSelectedUI(work) {
-      const idx = WORKS.findIndex(w => w.id === work.id);
+      const idx = indexById.get(work.id) ?? -1;
       titleEl.textContent  = work.title;
       kickerEl.textContent = idx >= 0 ? `${String(idx + 1).padStart(2, "0")} / 10` : "Selected work";
       mintBtn.disabled     = !MINT_ACTIVE || !work.canMint;
       renderList();
     }
 
+    function loadWorkMobile(work) {
+      currentWork = work;
+      setSelectedUI(work);
+      previewImage.src = imageForDevice(work.image);
+      previewImage.alt = `${work.title} preview`;
+      statusEl.textContent = "Preview";
+      mount.classList.remove("is-loading");
+      mount.classList.add("is-loaded", "show-still");
+      mintNote.textContent = "Mobile preview available. Full interactive viewer is best experienced on desktop.";
+      toggleOrbitBtn.disabled = true;
+      resetViewBtn.disabled   = true;
+      toggleStillBtn.disabled = false;
+      // Replace the loading box with the "view on desktop" notice.
+      loadingBox.style.display     = "none";
+      desktopOnlyBox.style.display = "block";
+      mount.classList.add("show-desktop-notice");
+    }
+
     async function loadWork(work) {
       if (!work) return;
+      if (usePreviewOnly()) { loadWorkMobile(work); return; }
 
-      if (isMobile) {
-        currentWork = work;
-        setSelectedUI(work);
-        previewImage.src = work.image;
-        previewImage.alt = `${work.title} preview`;
-        titleEl.textContent = work.title;
-        statusEl.textContent = "Preview";
-        mount.classList.remove("is-loading");
-        mount.classList.add("is-loaded", "show-still");
-        mintNote.textContent = "Mobile preview available. Full interactive viewer is best experienced on desktop.";
-        toggleOrbitBtn.disabled = true;
-        resetViewBtn.disabled = true;
-        toggleStillBtn.disabled = false;
-        return;
-      }
+      hideDesktopOnlyNotice();
 
-      initWebGL(); // ensure renderer exists before loading
+      const ok = await initWebGL();
+      if (!ok) return;
+
+      // Race protection: each loadWork bumps the token. Any in-flight load
+      // for a previous token must bail before mutating shared state.
+      const token = ++loadToken;
+
       if (currentSplat) {
         scene.remove(currentSplat);
         currentSplat.dispose?.();
         currentSplat = null;
       }
+
       currentWork = work;
       userHasInteracted = false;
       setSelectedUI(work);
       showPreview(work);
       statusEl.textContent = "Loading…";
 
-      // Show elapsed time while waiting — gives user feedback on slow gateways.
       const loadStart = Date.now();
       const elapsedTimer = setInterval(() => {
-        if (!mount.classList.contains("is-loading")) { clearInterval(elapsedTimer); return; }
-        const s = ((Date.now() - loadStart) / 1000).toFixed(0);
+        if (loadToken !== token || !mount.classList.contains("is-loading")) {
+          clearInterval(elapsedTimer);
+          return;
+        }
+        const s = Math.floor((Date.now() - loadStart) / 1000);
         loadingBox.textContent = `Loading object · ${s}s`;
-      }, 1000);
+      }, 500);
 
-      const finalize = (splat, ok) => {
+      try {
+        const splat = await new Promise(resolve => {
+          const s = new SplatMesh({ url: work.url, onLoad: () => resolve(s) });
+          s.visible = false; // keep hidden until centered, to avoid the pop-in jump
+          scene.add(s);
+          currentSplat = s;
+
+          // Safety timeout: if Spark never fires onLoad, reveal whatever loaded
+          // rather than leaving the viewer trapped in loading state forever.
+          setTimeout(() => resolve(s), 28000);
+        });
+
         clearInterval(elapsedTimer);
-        if (currentSplat !== splat) return;
+        if (loadToken !== token) return; // a newer load is in flight
+
         const profile = getViewProfile(work);
         centerAndScaleSplat(splat, profile.targetRadius, work);
         if (!userHasInteracted) {
           yaw = 0; pitch = 0;
           radius = profile.viewRadius;
-          orbitTarget.set(0, 0, 0);
-          autoOrbit = true;
-          toggleOrbitBtn.textContent = "Auto-orbit: on";
+          orbitTarget.x = orbitTarget.y = orbitTarget.z = 0;
+          setAutoOrbit(!reduceMotion);
           updateCamera();
         }
-        markLoaded(ok ?? true);
-      };
-
-      const tryLoad = (url) => new Promise((resolve, reject) => {
-        try {
-          const splat = new SplatMesh({
-            url,
-            onLoad: () => resolve(splat),
-          });
-          scene.add(splat);
-          currentSplat = splat;
-
-          // Progressive centering attempts while streaming.
-          [600, 1400, 2600, 4200].forEach(delay => {
-            setTimeout(() => {
-              if (currentSplat !== splat) return;
-              const profile = getViewProfile(work);
-              const ok = centerAndScaleSplat(splat, profile.targetRadius, work);
-              if (ok && mount.classList.contains("is-loading")) finalize(splat, true);
-            }, delay);
-          });
-
-          // Hard timeout — if onLoad never fires, resolve anyway with what we have.
-          setTimeout(() => resolve(splat), 28000);
-        } catch (err) {
-          reject(err);
-        }
-      });
-
-      try {
-        const splat = await tryLoad(work.url);
-        if (currentSplat === splat) finalize(splat, true);
+        splat.visible = true;
+        needsRender = true;
+        markLoaded();
       } catch (err) {
         clearInterval(elapsedTimer);
+        if (loadToken !== token) return;
         console.error("Splat load failed:", err);
         mount.classList.remove("is-loading");
         loadingBox.textContent = "Load failed";
-        statusEl.textContent = "Failed to load";
+        statusEl.textContent   = "Failed to load";
       }
     }
 
-    // Prefetch cache: track in-flight and completed fetches so we don't double-fetch.
-    const prefetchCache = new Map(); // id → "pending" | "done"
-
+    // ── prefetch on hover ───────────────────────────────────────────
+    // Warms the HTTP cache so the next click feels instant. Phones skip this
+    // — bandwidth there is precious and the desktop path is gated anyway.
+    const prefetched = new Set();
     function prefetchSplat(work) {
-      if (!work?.url) return;
-      if (prefetchCache.has(work.id)) return;
-      prefetchCache.set(work.id, "pending");
-      // fetch() with no-store keeps it in the browser's HTTP cache for the real load
-      fetch(work.url, { method: "GET", cache: "force-cache" })
-        .then(() => prefetchCache.set(work.id, "done"))
-        .catch(() => prefetchCache.delete(work.id));
+      if (!work?.url || prefetched.has(work.id)) return;
+      prefetched.add(work.id);
+      fetch(work.url, { cache: "force-cache" }).catch(() => prefetched.delete(work.id));
     }
 
     function renderList() {
-      worksListEl.innerHTML = "";
+      const frag = document.createDocumentFragment();
       WORKS.forEach((w, idx) => {
         const item = document.createElement("div");
         item.className = "workItem" + (currentWork?.id === w.id ? " active" : "");
-        item.setAttribute("role", "listitem button");
+        item.setAttribute("role", "button");
         item.setAttribute("tabindex", "0");
+        item.setAttribute("aria-label", `Work ${idx + 1}: ${w.title}`);
 
-        const no   = document.createElement("div");
+        const no = document.createElement("div");
         no.className   = "workNo";
         no.textContent = String(idx + 1).padStart(2, "0");
 
@@ -1126,69 +1341,70 @@
         name.className   = "workName";
         name.textContent = w.title;
 
-        item.appendChild(no);
-        item.appendChild(name);
-
+        item.append(no, name);
         item.addEventListener("click", () => goToWork(w.id));
         item.addEventListener("keydown", e => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToWork(w.id); }
         });
 
-        // Prefetch on hover — starts the fetch before the user clicks.
         if (!isMobile) {
           item.addEventListener("pointerenter", () => prefetchSplat(w), { once: true });
         }
 
-        worksListEl.appendChild(item);
+        frag.appendChild(item);
       });
+      worksListEl.replaceChildren(frag);
     }
 
-    // ── audio ─────────────────────────────────────────────────────────
-    const audio      = document.getElementById("ambientAudio");
-    const audioBtn   = document.getElementById("toggleAudio");
+    // ── audio ───────────────────────────────────────────────────────
+    // src is unset in HTML and only assigned on first user gesture — phones
+    // therefore never fetch the ~5–15 MB audio file.
+    const audio    = document.getElementById("ambientAudio");
+    const audioBtn = document.getElementById("toggleAudio");
     let audioStarted = false;
     let audioMuted   = false;
-
     audio.volume = 0.48;
 
-    function updateAudioBtn() {
-      audioBtn.textContent = audioMuted ? "♪ unmute" : "♪ mute";
-    }
+    const updateAudioBtn = () => { audioBtn.textContent = audioMuted ? "♪ unmute" : "♪ mute"; };
 
-    // Browsers require a user gesture before audio can play.
-    // Start on the first interaction anywhere on the page.
     function startAudio() {
-      if (audioStarted) return;
+      if (audioStarted || usePreviewOnly()) return;
       audioStarted = true;
+      if (!audio.src) audio.src = AUDIO_SRC;
       audio.play().catch(() => {});
       document.removeEventListener("pointerdown", startAudio);
-      document.removeEventListener("keydown", startAudio);
+      document.removeEventListener("keydown",    startAudio);
     }
 
-    document.addEventListener("pointerdown", startAudio);
-    document.addEventListener("keydown", startAudio);
+    let audioEnabled = false;
+    function enableAudio() {
+      if (audioEnabled) return;
+      audioEnabled = true;
+      audioBtn.disabled = false;
+      audioBtn.title    = "";
+      document.addEventListener("pointerdown", startAudio);
+      document.addEventListener("keydown",    startAudio);
+    }
 
     audioBtn.addEventListener("click", () => {
+      if (!audioEnabled) return;
       audioMuted = !audioMuted;
       audio.muted = audioMuted;
       updateAudioBtn();
-      // If they unmute and audio hasn't started yet, start it now.
       if (!audioMuted && !audioStarted) startAudio();
     });
 
+    if (usePreviewOnly()) {
+      audioBtn.disabled = true;
+      audioBtn.title    = "Audio is desktop-only";
+    } else {
+      enableAudio();
+    }
     updateAudioBtn();
 
-    // ── button handlers ──────────────────────────────────────────────
-    toggleOrbitBtn.addEventListener("click", () => {
-      autoOrbit = !autoOrbit;
-      toggleOrbitBtn.textContent = autoOrbit ? "Auto-orbit: on" : "Auto-orbit: off";
-    });
-
-    toggleStillBtn.addEventListener("click", () => {
-      stillLayerOn = !stillLayerOn;
-      applyStillLayerState();
-    });
-
+    // ── button handlers ─────────────────────────────────────────────
+    toggleOrbitBtn.addEventListener("click", () => setAutoOrbit(!autoOrbit));
+    toggleStillBtn.addEventListener("click", () => { stillLayerOn = !stillLayerOn; applyStillLayerState(); });
     resetViewBtn.addEventListener("click", resetView);
 
     mintBtn.addEventListener("click", () => {
@@ -1196,7 +1412,7 @@
       window.open(currentWork.acquireUrl, "_blank", "noopener,noreferrer");
     });
 
-    // ── routing ──────────────────────────────────────────────────────
+    // ── routing ─────────────────────────────────────────────────────
     async function handleRoute() {
       const route = parseRoute();
       if (route.name === "work") {
@@ -1211,32 +1427,42 @@
       statusEl.textContent = "Idle";
       mintBtn.disabled     = true;
       mount.classList.remove("is-loading", "is-loaded");
-      // Show the first work's image as the idle backdrop.
-      previewImage.src = IDLE_IMAGE;
+      hideDesktopOnlyNotice();
+      previewImage.src = imageForDevice(IDLE_IMAGE);
       previewImage.alt = "";
       mount.classList.add("show-still");
       renderList();
     }
-
     window.addEventListener("hashchange", handleRoute);
 
-    // ── mobile banner dismiss ─────────────────────────────────────────
+    // ── mobile banner dismiss ───────────────────────────────────────
     const mobileBanner = document.getElementById("mobileBanner");
-    const mbDismiss    = document.getElementById("mbDismiss");
-    if (mbDismiss) {
-      mbDismiss.addEventListener("click", () => {
-        mobileBanner.style.display = "none";
-      });
-    }
+    document.getElementById("mbDismiss")?.addEventListener("click", () => {
+      mobileBanner.style.display = "none";
+    });
 
+    // ── mobile opt-in to full WebGL viewer ──────────────────────────
+    // User explicitly chose the interactive path despite the warning. Promote
+    // the buttons, unlock audio, and re-enter loadWork on the current work so
+    // it takes the desktop branch this time.
+    document.getElementById("tryInteractiveBtn")?.addEventListener("click", async () => {
+      if (mobileOverride) return;
+      mobileOverride = true;
+      enableAudio();
+      hideDesktopOnlyNotice();
+      mintNote.textContent = "Select a work. The selected object can be acquired while available.";
+      toggleOrbitBtn.disabled = false;
+      resetViewBtn.disabled   = false;
+      // Let the UI commit (button state, notice hide, layout) before Safari
+      // starts the expensive WebGL init. Avoids visible jank during opt-in.
+      await new Promise(requestAnimationFrame);
+      if (currentWork) loadWork(currentWork);
+    });
+
+    // ── boot ────────────────────────────────────────────────────────
     applyStillLayerState();
     renderList();
     handleRoute();
-
-    // Begin fetching the first work's splat immediately so it's warm when clicked.
-    if (!isMobile) {
-      prefetchSplat(WORKS[0]);
-    }
   </script>
 </body>
 </html>
